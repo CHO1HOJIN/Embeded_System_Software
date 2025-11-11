@@ -107,7 +107,8 @@
 // physical to virtual translation
 #define Pcw2VdieTranslation(chNo, wayNo) ((chNo) + (wayNo) * (USER_CHANNELS))
 #define PlsbPage2VpageTranslation(pageNo) ((pageNo) > (0) ? ( ((pageNo) + 1) / 2): (0))
-
+#define LOGICAL_BLOCK_MAP_ADDR      (VIRTUAL_SLICE_MAP_ADDR + sizeof(VIRTUAL_SLICE_MAP))
+#define PHYSICAL_BLOCK_MAP_ADDR     (LOGICAL_BLOCK_MAP_ADDR + sizeof(LOGICAL_BLOCK_MAP))
 // HJ: for Block-level FTL
 #define LOGICAL_BLOCKS_PER_SSD 16384
 

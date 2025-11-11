@@ -102,15 +102,18 @@ void InitSliceMap()
 	}
 
 	// HJ: for Block-level FTL
-	for(unsigned int blockNum = 0; blockNum < LOGICAL_BLOCKS_PER_SSD; blockNum++)
-	{
-		logicalBlockMapPtr->logicalBlock[blockNum].physicalBlockAddr = BLOCK_NONE;
-	}
+    logicalBlockMapPtr = (LOGICAL_BLOCK_MAP*) LOGICAL_BLOCK_MAP_ADDR;
+    physicalBlockMapPtr = (PHYSICAL_BLOCK_MAP*) PHYSICAL_BLOCK_MAP_ADDR;
+    
+    for(unsigned int blockNum = 0; blockNum < LOGICAL_BLOCKS_PER_SSD; blockNum++)
+    {
+        logicalBlockMapPtr->logicalBlock[blockNum].physicalBlockAddr = BLOCK_NONE;
+    }
 
-	for(unsigned int pbNum = 0; pbNum < USER_BLOCKS_PER_DIE * USER_DIES; pbNum++)
-	{
-		physicalBlockMapPtr->physicalBlock[pbNum].logicalBlockAddr = BLOCK_NONE;
-	}
+    for(unsigned int pbNum = 0; pbNum < USER_BLOCKS_PER_DIE * USER_DIES; pbNum++)
+    {
+        physicalBlockMapPtr->physicalBlock[pbNum].logicalBlockAddr = BLOCK_NONE;
+    }
 
 }
 
@@ -671,26 +674,40 @@ unsigned int AddrTransWrite(unsigned int logicalSliceAddr)
         assert(!"[WARNING] Logical block address out of range");
     
     // 기존 물리 블록 확인
-    unsigned int oldPhysicalBlockNo = logicalBlockMapPtr->logicalBlock[logicalBlockNo].physicalBlockAddr;
+    unsigned int physicalBlockNo = logicalBlockMapPtr->logicalBlock[logicalBlockNo].physicalBlockAddr;
+    unsigned int virtualSliceAddr;
     
-    // 첫 쓰기이거나 블록이 가득 찬 경우 새 블록 할당
-    if(oldPhysicalBlockNo == BLOCK_NONE) {
-        // 새 물리 블록 할당
-        unsigned int newPhysicalBlockNo = FindFreeVirtualSlice() / SLICES_PER_BLOCK;
+    // 블록이 처음 쓰이는 경우 or 블록 재매핑 필요 시
+    if(physicalBlockNo == BLOCK_NONE)
+    {
+        // 새 슬라이스 할당 (내부적으로 블록/페이지 관리됨)
+        virtualSliceAddr = FindFreeVirtualSlice();
         
-        // 매핑 업데이트
-        logicalBlockMapPtr->logicalBlock[logicalBlockNo].physicalBlockAddr = newPhysicalBlockNo;
-        physicalBlockMapPtr->physicalBlock[newPhysicalBlockNo].logicalBlockAddr = logicalBlockNo;
+        // 블록 단위 매핑 업데이트
+        physicalBlockNo = Vsa2VblockTranslation(virtualSliceAddr);
+        unsigned int dieNo = Vsa2VdieTranslation(virtualSliceAddr);
         
-        oldPhysicalBlockNo = newPhysicalBlockNo;
+        logicalBlockMapPtr->logicalBlock[logicalBlockNo].physicalBlockAddr = physicalBlockNo;
+        
+        // 기존 슬라이스 맵도 업데이트 (호환성)
+        logicalSliceMapPtr->logicalSlice[logicalSliceAddr].virtualSliceAddr = virtualSliceAddr;
+        virtualSliceMapPtr->virtualSlice[virtualSliceAddr].logicalSliceAddr = logicalSliceAddr;
     }
-    
-    // 물리 슬라이스 주소 반환
-    unsigned int virtualSliceAddr = oldPhysicalBlockNo * SLICES_PER_BLOCK + pageOffset;
-    
-    // 기존 슬라이스 맵도 업데이트 (호환성)
-    logicalSliceMapPtr->logicalSlice[logicalSliceAddr].virtualSliceAddr = virtualSliceAddr;
-    virtualSliceMapPtr->virtualSlice[virtualSliceAddr].logicalSliceAddr = logicalSliceAddr;
+    else
+    {
+        // 같은 블록 내 다른 페이지 쓰기
+        unsigned int dieNo = physicalBlockNo / USER_BLOCKS_PER_DIE;
+        unsigned int blockNo = physicalBlockNo % USER_BLOCKS_PER_DIE;
+        
+        virtualSliceAddr = Vorg2VsaTranslation(dieNo, blockNo, pageOffset);
+        
+        // 이미 쓰여진 페이지면 InvalidateOldVsa 호출
+        if(logicalSliceMapPtr->logicalSlice[logicalSliceAddr].virtualSliceAddr != VSA_NONE)
+            InvalidateOldVsa(logicalSliceAddr);
+        
+        logicalSliceMapPtr->logicalSlice[logicalSliceAddr].virtualSliceAddr = virtualSliceAddr;
+        virtualSliceMapPtr->virtualSlice[virtualSliceAddr].logicalSliceAddr = logicalSliceAddr;
+    }
     
     return virtualSliceAddr;
 }
