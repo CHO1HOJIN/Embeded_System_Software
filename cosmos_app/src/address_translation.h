@@ -110,7 +110,11 @@
 #define LOGICAL_BLOCK_MAP_ADDR      (VIRTUAL_SLICE_MAP_ADDR + sizeof(VIRTUAL_SLICE_MAP))
 #define PHYSICAL_BLOCK_MAP_ADDR     (LOGICAL_BLOCK_MAP_ADDR + sizeof(LOGICAL_BLOCK_MAP))
 // HJ: for Block-level FTL
-#define LOGICAL_BLOCKS_PER_SSD 16384
+#define LOGICAL_BLOCKS_PER_SSD      (SLICES_PER_SSD / SLICES_PER_BLOCK)
+#define GLOBAL_BLOCK_NONE           0xffffffffU
+#define MAKE_GLOBAL_BLOCK_NO(dieNo, blockNo) ((unsigned int)((dieNo) * USER_BLOCKS_PER_DIE + (blockNo)))
+#define GLOBAL_BLOCK_TO_DIE(gbl)    ((unsigned int)((gbl) / USER_BLOCKS_PER_DIE))
+#define GLOBAL_BLOCK_TO_BLOCK(gbl)  ((unsigned int)((gbl) % USER_BLOCKS_PER_DIE))
 
 typedef struct {
     unsigned int physicalBlockAddr;
