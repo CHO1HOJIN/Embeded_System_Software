@@ -59,6 +59,11 @@ P_BAD_BLOCK_TABLE_INFO_MAP bbtInfoMapPtr;
 unsigned char sliceAllocationTargetDie;
 unsigned int mbPerbadBlockSpace;
 
+// HJ: for Block-level FTL
+LOGICAL_BLOCK_MAP* logicalBlockMapPtr;
+PHYSICAL_BLOCK_MAP* physicalBlockMapPtr;
+
+
 
 void InitAddressMap()
 {
@@ -95,6 +100,18 @@ void InitSliceMap()
 		logicalSliceMapPtr->logicalSlice[sliceAddr].virtualSliceAddr = VSA_NONE;
 		virtualSliceMapPtr->virtualSlice[sliceAddr].logicalSliceAddr = LSA_NONE;
 	}
+
+	// HJ: for Block-level FTL
+	for(unsigned int blockNum = 0; blockNum < LOGICAL_BLOCKS_PER_SSD; blockNum++)
+	{
+		logicalBlockMapPtr->logicalBlock[blockNum].physicalBlockAddr = BLOCK_NONE;
+	}
+
+	for(unsigned int pbNum = 0; pbNum < USER_BLOCKS_PER_DIE * USER_DIES; pbNum++)
+	{
+		physicalBlockMapPtr->physicalBlock[pbNum].logicalBlockAddr = BLOCK_NONE;
+	}
+
 }
 
 void RemapBadBlock()
@@ -626,40 +643,57 @@ void InitBlockDieMap()
 
 unsigned int AddrTransRead(unsigned int logicalSliceAddr)
 {
-	unsigned int virtualSliceAddr;
-
-	if(logicalSliceAddr < SLICES_PER_SSD)
-	{
-		virtualSliceAddr = logicalSliceMapPtr->logicalSlice[logicalSliceAddr].virtualSliceAddr;
-
-		if(virtualSliceAddr != VSA_NONE)
-			return virtualSliceAddr;
-		else
-			return VSA_FAIL;
-	}
-	else
-		assert(!"[WARNING] Logical address is larger than maximum logical address served by SSD [WARNING]");
+    // 논리 슬라이스 주소에서 블록 번호와 페이지 오프셋 추출
+    unsigned int logicalBlockNo = logicalSliceAddr / SLICES_PER_BLOCK;
+    unsigned int pageOffset = logicalSliceAddr % SLICES_PER_BLOCK;
+    
+    if(logicalBlockNo >= LOGICAL_BLOCKS_PER_SSD)
+        assert(!"[WARNING] Logical block address out of range");
+    
+    // 물리 블록 번호 조회
+    unsigned int physicalBlockNo = logicalBlockMapPtr->logicalBlock[logicalBlockNo].physicalBlockAddr;
+    
+    if(physicalBlockNo == BLOCK_NONE)
+        return VSA_FAIL;  // 매핑되지 않은 블록
+    
+    // 물리 슬라이스 주소 = 물리 블록 번호 * 블록당 페이지 수 + 페이지 오프셋
+    unsigned int virtualSliceAddr = physicalBlockNo * SLICES_PER_BLOCK + pageOffset;
+    
+    return virtualSliceAddr;
 }
 
 unsigned int AddrTransWrite(unsigned int logicalSliceAddr)
 {
-	unsigned int virtualSliceAddr;
-
-	if(logicalSliceAddr < SLICES_PER_SSD)
-	{
-		InvalidateOldVsa(logicalSliceAddr);
-
-		virtualSliceAddr = FindFreeVirtualSlice();
-
-		logicalSliceMapPtr->logicalSlice[logicalSliceAddr].virtualSliceAddr = virtualSliceAddr;
-		virtualSliceMapPtr->virtualSlice[virtualSliceAddr].logicalSliceAddr = logicalSliceAddr;
-
-		return virtualSliceAddr;
-	}
-	else
-		assert(!"[WARNING] Logical address is larger than maximum logical address served by SSD [WARNING]");
+    unsigned int logicalBlockNo = logicalSliceAddr / SLICES_PER_BLOCK;
+    unsigned int pageOffset = logicalSliceAddr % SLICES_PER_BLOCK;
+    
+    if(logicalBlockNo >= LOGICAL_BLOCKS_PER_SSD)
+        assert(!"[WARNING] Logical block address out of range");
+    
+    // 기존 물리 블록 확인
+    unsigned int oldPhysicalBlockNo = logicalBlockMapPtr->logicalBlock[logicalBlockNo].physicalBlockAddr;
+    
+    // 첫 쓰기이거나 블록이 가득 찬 경우 새 블록 할당
+    if(oldPhysicalBlockNo == BLOCK_NONE) {
+        // 새 물리 블록 할당
+        unsigned int newPhysicalBlockNo = FindFreeVirtualSlice() / SLICES_PER_BLOCK;
+        
+        // 매핑 업데이트
+        logicalBlockMapPtr->logicalBlock[logicalBlockNo].physicalBlockAddr = newPhysicalBlockNo;
+        physicalBlockMapPtr->physicalBlock[newPhysicalBlockNo].logicalBlockAddr = logicalBlockNo;
+        
+        oldPhysicalBlockNo = newPhysicalBlockNo;
+    }
+    
+    // 물리 슬라이스 주소 반환
+    unsigned int virtualSliceAddr = oldPhysicalBlockNo * SLICES_PER_BLOCK + pageOffset;
+    
+    // 기존 슬라이스 맵도 업데이트 (호환성)
+    logicalSliceMapPtr->logicalSlice[logicalSliceAddr].virtualSliceAddr = virtualSliceAddr;
+    virtualSliceMapPtr->virtualSlice[virtualSliceAddr].logicalSliceAddr = logicalSliceAddr;
+    
+    return virtualSliceAddr;
 }
-
 
 unsigned int FindFreeVirtualSlice()
 {

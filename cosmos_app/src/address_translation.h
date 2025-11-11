@@ -108,6 +108,26 @@
 #define Pcw2VdieTranslation(chNo, wayNo) ((chNo) + (wayNo) * (USER_CHANNELS))
 #define PlsbPage2VpageTranslation(pageNo) ((pageNo) > (0) ? ( ((pageNo) + 1) / 2): (0))
 
+// HJ: for Block-level FTL
+#define LOGICAL_BLOCKS_PER_SSD 16384
+
+typedef struct {
+    unsigned int physicalBlockAddr;
+} LOGICAL_BLOCK_ENTRY;
+
+typedef struct {
+    LOGICAL_BLOCK_ENTRY logicalBlock[LOGICAL_BLOCKS_PER_SSD];
+} LOGICAL_BLOCK_MAP;
+
+// HJ: physical to logical translation
+typedef struct {
+    unsigned int logicalBlockAddr;
+} PHYSICAL_BLOCK_ENTRY;
+
+typedef struct {
+    PHYSICAL_BLOCK_ENTRY physicalBlock[USER_BLOCKS_PER_DIE * USER_DIES];
+} PHYSICAL_BLOCK_MAP;
+
 //for logical to virtual translation
 typedef struct _LOGICAL_SLICE_ENTRY {
 	unsigned int virtualSliceAddr;
