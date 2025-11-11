@@ -218,6 +218,7 @@ unsigned int AddrTransWrite(unsigned int logicalSliceAddr);
 unsigned int FindFreeVirtualSlice();
 unsigned int FindFreeVirtualSliceForGc(unsigned int copyTargetDieNo, unsigned int victimBlockNo);
 unsigned int FindDieForFreeSliceAllocation();
+unsigned int FindFreeVirtualBlock();
 
 void InvalidateOldVsa(unsigned int logicalSliceAddr);
 void EraseBlock(unsigned int dieNo, unsigned int blockNo);

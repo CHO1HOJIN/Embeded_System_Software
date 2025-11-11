@@ -647,8 +647,8 @@ void InitBlockDieMap()
 
 unsigned int AddrTransRead(unsigned int logicalSliceAddr)
 {
-    unsigned int logicalBlockNo = logicalSliceAddr / SLICES_PER_BLOCK;
-    unsigned int pageOffset = logicalSliceAddr % SLICES_PER_BLOCK;
+    unsigned int logicalBlockNo = logicalSliceAddr;
+    unsigned int pageOffset = 0;
 
     if(logicalBlockNo >= LOGICAL_BLOCKS_PER_SSD)
         assert(!"[WARNING] Logical block address out of range");
@@ -665,16 +665,13 @@ unsigned int AddrTransRead(unsigned int logicalSliceAddr)
     unsigned int dieNo = GLOBAL_BLOCK_TO_DIE(physicalBlockNo);
     unsigned int blockNo = GLOBAL_BLOCK_TO_BLOCK(physicalBlockNo);
 
-    if(pageOffset >= virtualBlockMapPtr->block[dieNo][blockNo].currentPage)
-        return VSA_FAIL;
-
-    return Vorg2VsaTranslation(dieNo, blockNo, pageOffset);
+    return Vorg2VsaTranslation(dieNo, blockNo, 0);
 }
 
 unsigned int AddrTransWrite(unsigned int logicalSliceAddr)
 {
-    unsigned int logicalBlockNo = logicalSliceAddr / SLICES_PER_BLOCK;
-    unsigned int pageOffset = logicalSliceAddr % SLICES_PER_BLOCK;
+    unsigned int logicalBlockNo = logicalSliceAddr;
+    unsigned int pageOffset = 0;
 
     if(logicalBlockNo >= LOGICAL_BLOCKS_PER_SSD)
         assert(!"[WARNING] Logical block address out of range");
@@ -687,7 +684,7 @@ unsigned int AddrTransWrite(unsigned int logicalSliceAddr)
 
     if(physicalBlockNo == GLOBAL_BLOCK_NONE)
     {
-        unsigned int allocatedVsa = FindFreeVirtualSlice();
+        unsigned int allocatedVsa = FindFreeVirtualBlock();
         unsigned int dieNo = Vsa2VdieTranslation(allocatedVsa);
         unsigned int blockNo = Vsa2VblockTranslation(allocatedVsa);
 
@@ -695,20 +692,18 @@ unsigned int AddrTransWrite(unsigned int logicalSliceAddr)
         logicalBlockMapPtr->logicalBlock[logicalBlockNo].physicalBlockAddr = physicalBlockNo;
         physicalBlockMapPtr->physicalBlock[physicalBlockNo].logicalBlockAddr = logicalBlockNo;
 
-        if(virtualBlockMapPtr->block[dieNo][blockNo].currentPage <= pageOffset)
-            virtualBlockMapPtr->block[dieNo][blockNo].currentPage = pageOffset + 1;
+        virtualBlockMapPtr->block[dieNo][blockNo].currentPage = USER_PAGES_PER_BLOCK;
 
-        virtualSliceAddr = Vorg2VsaTranslation(dieNo, blockNo, pageOffset);
+        virtualSliceAddr = Vorg2VsaTranslation(dieNo, blockNo, 0);
     }
     else
     {
         unsigned int dieNo = GLOBAL_BLOCK_TO_DIE(physicalBlockNo);
         unsigned int blockNo = GLOBAL_BLOCK_TO_BLOCK(physicalBlockNo);
 
-        if(virtualBlockMapPtr->block[dieNo][blockNo].currentPage <= pageOffset)
-            virtualBlockMapPtr->block[dieNo][blockNo].currentPage = pageOffset + 1;
+        virtualBlockMapPtr->block[dieNo][blockNo].currentPage = USER_PAGES_PER_BLOCK;
 
-        virtualSliceAddr = Vorg2VsaTranslation(dieNo, blockNo, pageOffset);
+        virtualSliceAddr = Vorg2VsaTranslation(dieNo, blockNo, 0);
     }
 
     logicalSliceMapPtr->logicalSlice[logicalSliceAddr].virtualSliceAddr = virtualSliceAddr;
@@ -750,12 +745,35 @@ unsigned int FindFreeVirtualSlice()
 	else if(virtualBlockMapPtr->block[dieNo][currentBlock].currentPage > USER_PAGES_PER_BLOCK)
 		assert(!"[WARNING] Current page management fail [WARNING]");
 
-
 	virtualSliceAddr = Vorg2VsaTranslation(dieNo, currentBlock, virtualBlockMapPtr->block[dieNo][currentBlock].currentPage);
 	virtualBlockMapPtr->block[dieNo][currentBlock].currentPage++;
 	sliceAllocationTargetDie = FindDieForFreeSliceAllocation();
 	dieNo = sliceAllocationTargetDie;
 	return virtualSliceAddr;
+}
+
+unsigned int FindFreeVirtualBlock()
+{
+    unsigned int dieNo = sliceAllocationTargetDie;
+    unsigned int blockNo = virtualDieMapPtr->die[dieNo].currentBlock;
+
+    if(blockNo == BLOCK_NONE || virtualBlockMapPtr->block[dieNo][blockNo].free == 0)
+    {
+        blockNo = GetFromFbList(dieNo, GET_FREE_BLOCK_NORMAL);
+        if(blockNo == BLOCK_FAIL)
+        {
+            GarbageCollection(dieNo);
+            blockNo = GetFromFbList(dieNo, GET_FREE_BLOCK_NORMAL);
+            if(blockNo == BLOCK_FAIL)
+                assert(!"[WARNING] There is no available block [WARNING]");
+        }
+        virtualDieMapPtr->die[dieNo].currentBlock = blockNo;
+    }
+
+    virtualBlockMapPtr->block[dieNo][blockNo].free = 0;
+    unsigned int virtualSliceAddr = Vorg2VsaTranslation(dieNo, blockNo, 0);
+    sliceAllocationTargetDie = FindDieForFreeSliceAllocation();
+    return virtualSliceAddr;
 }
 
 
@@ -813,26 +831,25 @@ unsigned int FindDieForFreeSliceAllocation()
 
 void InvalidateOldVsa(unsigned int logicalSliceAddr)
 {
-	unsigned int virtualSliceAddr, dieNo, blockNo;
+    unsigned int virtualSliceAddr, dieNo, blockNo;
 
-	virtualSliceAddr = logicalSliceMapPtr->logicalSlice[logicalSliceAddr].virtualSliceAddr;
+    virtualSliceAddr = logicalSliceMapPtr->logicalSlice[logicalSliceAddr].virtualSliceAddr;
 
-	if(virtualSliceAddr != VSA_NONE)
-	{
-		if(virtualSliceMapPtr->virtualSlice[virtualSliceAddr].logicalSliceAddr != logicalSliceAddr)
-			return;
+    if(virtualSliceAddr != VSA_NONE)
+    {
+        if(virtualSliceMapPtr->virtualSlice[virtualSliceAddr].logicalSliceAddr != logicalSliceAddr)
+            return;
 
-		dieNo = Vsa2VdieTranslation(virtualSliceAddr);
-		blockNo = Vsa2VblockTranslation(virtualSliceAddr);
+        dieNo = Vsa2VdieTranslation(virtualSliceAddr);
+        blockNo = Vsa2VblockTranslation(virtualSliceAddr);
 
-		// unlink
-		SelectiveGetFromGcVictimList(dieNo, blockNo);
-		virtualBlockMapPtr->block[dieNo][blockNo].invalidSliceCnt++;
-		logicalSliceMapPtr->logicalSlice[logicalSliceAddr].virtualSliceAddr = VSA_NONE;
+        // unlink
+        SelectiveGetFromGcVictimList(dieNo, blockNo);
+        virtualBlockMapPtr->block[dieNo][blockNo].free = 0;
+        logicalSliceMapPtr->logicalSlice[logicalSliceAddr].virtualSliceAddr = VSA_NONE;
 
-		PutToGcVictimList(dieNo, blockNo, virtualBlockMapPtr->block[dieNo][blockNo].invalidSliceCnt);
-	}
-
+        PutToGcVictimList(dieNo, blockNo, virtualBlockMapPtr->block[dieNo][blockNo].invalidSliceCnt);
+    }
 }
 
 
