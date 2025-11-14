@@ -662,18 +662,22 @@ unsigned int AddrTransRead(unsigned int logicalSliceAddr)
 
 	if(logicalSliceAddr < SLICES_PER_SSD)
 	{
-		virtualSliceAddr = logicalSliceMapPtr->logicalSlice[logicalSliceAddr].virtualSliceAddr;
-		// lbn = logicalSliceAddr / SLICES_PER_BLOCK;
-		// offset = logicalSliceAddr % SLICES_PER_BLOCK;
-		// pbn = lbn2pbnMapPtr->logicalBlock[lbn].pbn;
-		// dieNo = lbn2pbnMapPtr->logicalBlock[lbn].dieNo;
-		// virtualSliceAddr = Vorg2VsaTranslation(dieNo, pbn, offset);
 
+		lbn = logicalSliceAddr / SLICES_PER_BLOCK;
+		offset = logicalSliceAddr % SLICES_PER_BLOCK;
+		pbn = lbn2pbnMapPtr->logicalBlock[lbn].pbn;
+		dieNo = lbn2pbnMapPtr->logicalBlock[lbn].dieNo;
+		virtualSliceAddr = Vorg2VsaTranslation(dieNo, pbn, offset);
+
+		// virtualSliceAddr = logicalSliceMapPtr->logicalSlice[logicalSliceAddr].virtualSliceAddr;
 
 		if(virtualSliceAddr != VSA_NONE)
 			return virtualSliceAddr;
-		else
+		else{
+			//DEBUG
+			xil_printf("[ERROR] Read fail! Logical Slice Address: %d\r\n", logicalSliceAddr);
 			return VSA_FAIL;
+		}
 	}
 	else
 		assert(!"[WARNING] Logical address is larger than maximum logical address served by SSD [WARNING]");
@@ -688,7 +692,9 @@ unsigned int AddrTransWrite(unsigned int logicalSliceAddr)
 	{
 		lbn = logicalSliceAddr / SLICES_PER_BLOCK;
 		offset = logicalSliceAddr % SLICES_PER_BLOCK;
-		preVsa = logicalSliceMapPtr->logicalSlice[logicalSliceAddr].virtualSliceAddr;
+		preVsa = Vorg2VsaTranslation(lbn2pbnMapPtr->logicalBlock[lbn].dieNo,
+									lbn2pbnMapPtr->logicalBlock[lbn].pbn,
+									offset);
 
 		// overwrite
 		if (preVsa != VSA_NONE){
@@ -717,6 +723,7 @@ unsigned int FindFreeVirtualSlice(unsigned int lbn, unsigned int offset, unsigne
 
 	dieNo = sliceAllocationTargetDie;
 	currentBlock = virtualDieMapPtr->die[dieNo].currentBlock;
+	virtualBlockMapPtr->block[dieNo][currentBlock].currentPage = offset;
 
 	if(virtualBlockMapPtr->block[dieNo][currentBlock].currentPage == USER_PAGES_PER_BLOCK)
 	{
@@ -752,8 +759,8 @@ unsigned int FindFreeVirtualSlice(unsigned int lbn, unsigned int offset, unsigne
 	lbn2pbnMapPtr->logicalBlock[lbn].pbn = currentBlock;
 	pbn2lbnMapPtr->physicalBlock[dieNo][currentBlock].logicalBlockAddr = lbn;
 	
-	virtualSliceAddr = Vorg2VsaTranslation(dieNo, currentBlock, virtualBlockMapPtr->block[dieNo][currentBlock].currentPage);
-	virtualBlockMapPtr->block[dieNo][currentBlock].currentPage++;
+	virtualSliceAddr = Vorg2VsaTranslation(dieNo, currentBlock, offset);
+	virtualBlockMapPtr->block[dieNo][currentBlock].currentPage = offset + 1;
 	sliceAllocationTargetDie = FindDieForFreeSliceAllocation();
 	dieNo = sliceAllocationTargetDie;
 	return virtualSliceAddr;
