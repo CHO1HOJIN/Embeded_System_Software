@@ -89,6 +89,7 @@
 #define BBT_INFO_GROWN_BAD_UPDATE_NONE			0
 #define BBT_INFO_GROWN_BAD_UPDATE_BOOKED		1
 
+
 // virtual slice address to virtual organization translation
 #define Vsa2VdieTranslation(virtualSliceAddr) ((virtualSliceAddr) % (USER_DIES))
 #define Vsa2VblockTranslation(virtualSliceAddr) (((virtualSliceAddr) / (USER_DIES)) / (SLICES_PER_BLOCK))
@@ -108,6 +109,10 @@
 #define Pcw2VdieTranslation(chNo, wayNo) ((chNo) + (wayNo) * (USER_CHANNELS))
 #define PlsbPage2VpageTranslation(pageNo) ((pageNo) > (0) ? ( ((pageNo) + 1) / 2): (0))
 
+// for Block-level FTL maps
+#define LBN_TO_PBN_MAP_ADDR	(VIRTUAL_DIE_MAP_ADDR + sizeof(VIRTUAL_DIE_MAP))
+#define PBN_TO_LBN_MAP_ADDR	(LBN_TO_PBN_MAP_ADDR + sizeof(LOGICAL_BLOCK_MAP))
+
 //for logical to virtual translation
 typedef struct _LOGICAL_SLICE_ENTRY {
 	unsigned int virtualSliceAddr;
@@ -117,6 +122,14 @@ typedef struct _LOGICAL_SLICE_MAP {
 	LOGICAL_SLICE_ENTRY logicalSlice[SLICES_PER_SSD];
 } LOGICAL_SLICE_MAP, *P_LOGICAL_SLICE_MAP;
 
+typedef struct _LOGICAL_BLOCK_ENTRY {
+	unsigned int dieNo;
+	unsigned int pbn;
+} LOGICAL_BLOCK_ENTRY, *P_LOGICAL_BLOCK_ENTRY;
+
+typedef struct _LOGICAL_BLOCK_MAP {
+	LOGICAL_BLOCK_ENTRY logicalBlock[USER_BLOCKS_PER_SSD];
+} LOGICAL_BLOCK_MAP, *P_LOGICAL_BLOCK_MAP;
 
 //for virtual to logical  translation
 typedef struct _VIRTUAL_SLICE_ENTRY {
@@ -126,6 +139,15 @@ typedef struct _VIRTUAL_SLICE_ENTRY {
 typedef struct _VIRTUAL_SLICE_MAP {
 	VIRTUAL_SLICE_ENTRY virtualSlice[SLICES_PER_SSD];
 } VIRTUAL_SLICE_MAP, *P_VIRTUAL_SLICE_MAP;
+
+typedef struct _PHYSICAL_BLOCK_ENTRY {
+	unsigned int logicalBlockAddr;
+} PHYSICAL_BLOCK_ENTRY, *P_PHYSICAL_BLOCK_ENTRY;
+
+typedef struct _PHYSICAL_BLOCK_MAP {
+	PHYSICAL_BLOCK_ENTRY physicalBlock[USER_DIES][USER_BLOCKS_PER_SSD];
+} PHYSICAL_BLOCK_MAP, *P_PHYSICAL_BLOCK_MAP;
+
 
 typedef struct _VIRTUAL_BLOCK_ENTRY {
 	unsigned int bad : 1;
@@ -190,11 +212,12 @@ void InitBlockDieMap();
 
 unsigned int AddrTransRead(unsigned int logicalSliceAddr);
 unsigned int AddrTransWrite(unsigned int logicalSliceAddr);
-unsigned int FindFreeVirtualSlice();
+unsigned int FindFreeVirtualSlice(unsigned int lbn, unsigned int offset);
 unsigned int FindFreeVirtualSliceForGc(unsigned int copyTargetDieNo, unsigned int victimBlockNo);
 unsigned int FindDieForFreeSliceAllocation();
 
 void InvalidateOldVsa(unsigned int logicalSliceAddr);
+void InvalidateOldBlock(unsigned int lbn);
 void EraseBlock(unsigned int dieNo, unsigned int blockNo);
 
 void PutToFbList(unsigned int dieNo, unsigned int blockNo);

@@ -644,12 +644,17 @@ unsigned int AddrTransRead(unsigned int logicalSliceAddr)
 unsigned int AddrTransWrite(unsigned int logicalSliceAddr)
 {
 	unsigned int virtualSliceAddr;
+	unsigned int lbn, offset;
 
 	if(logicalSliceAddr < SLICES_PER_SSD)
 	{
-		InvalidateOldVsa(logicalSliceAddr);
+		lbn = logicalSliceAddr / SLICES_PER_BLOCK;
+		offset = logicalSliceAddr % SLICES_PER_BLOCK;
+		
+		InvalidateOldBlock(lbn);
+		// InvalidateOldVsa(logicalSliceAddr);
 
-		virtualSliceAddr = FindFreeVirtualSlice();
+		virtualSliceAddr = FindFreeVirtualSlice(lbn, offset);
 
 		logicalSliceMapPtr->logicalSlice[logicalSliceAddr].virtualSliceAddr = virtualSliceAddr;
 		virtualSliceMapPtr->virtualSlice[virtualSliceAddr].logicalSliceAddr = logicalSliceAddr;
@@ -661,7 +666,7 @@ unsigned int AddrTransWrite(unsigned int logicalSliceAddr)
 }
 
 
-unsigned int FindFreeVirtualSlice()
+unsigned int FindFreeVirtualSlice(unsigned int lbn, unsigned int offset)
 {
 	unsigned int currentBlock, virtualSliceAddr, dieNo;
 
@@ -777,6 +782,54 @@ void InvalidateOldVsa(unsigned int logicalSliceAddr)
 		PutToGcVictimList(dieNo, blockNo, virtualBlockMapPtr->block[dieNo][blockNo].invalidSliceCnt);
 	}
 
+}
+
+void InvalidateOldBlock(unsigned int lbn)
+{
+    unsigned int dieNo = VSA_NONE;
+    unsigned int blockNo = VSA_NONE;
+    unsigned int invalidCount = 0;
+    unsigned int firstValidVsa = VSA_NONE;
+    
+    // 1단계: 블록 내 모든 슬라이스 스캔 및 블록 정보 수집
+    for(unsigned int i = 0; i < SLICES_PER_BLOCK; i++)
+    {
+        unsigned int lsa = lbn * SLICES_PER_BLOCK + i;
+        unsigned int vsa = logicalSliceMapPtr->logicalSlice[lsa].virtualSliceAddr;
+        
+        if(vsa != VSA_NONE)
+        {
+            // 매핑 일관성 체크
+            if(virtualSliceMapPtr->virtualSlice[vsa].logicalSliceAddr != lsa)
+                continue;
+            
+            // 첫 번째 유효한 VSA에서 블록 정보 획득
+            if(firstValidVsa == VSA_NONE)
+            {
+                firstValidVsa = vsa;
+                dieNo = Vsa2VdieTranslation(vsa);
+                blockNo = Vsa2VblockTranslation(vsa);
+            }
+            
+            // 논리 매핑 해제
+            logicalSliceMapPtr->logicalSlice[lsa].virtualSliceAddr = VSA_NONE;
+            invalidCount++;
+        }
+    }
+    
+    // 2단계: 무효화된 슬라이스가 있으면 GC victim list 업데이트
+    if(invalidCount > 0 && dieNo != VSA_NONE)
+    {
+        // GC victim list에서 블록 제거
+        SelectiveGetFromGcVictimList(dieNo, blockNo);
+        
+        // invalidSliceCnt 업데이트
+        virtualBlockMapPtr->block[dieNo][blockNo].invalidSliceCnt += invalidCount;
+        
+        // GC victim list에 재추가
+        PutToGcVictimList(dieNo, blockNo, 
+            virtualBlockMapPtr->block[dieNo][blockNo].invalidSliceCnt);
+    }
 }
 
 
