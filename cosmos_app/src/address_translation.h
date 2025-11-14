@@ -110,8 +110,8 @@
 #define PlsbPage2VpageTranslation(pageNo) ((pageNo) > (0) ? ( ((pageNo) + 1) / 2): (0))
 
 // for Block-level FTL maps
-#define LBN_TO_PBN_MAP_ADDR	(VIRTUAL_DIE_MAP_ADDR + sizeof(VIRTUAL_DIE_MAP))
-#define PBN_TO_LBN_MAP_ADDR	(LBN_TO_PBN_MAP_ADDR + sizeof(LOGICAL_BLOCK_MAP))
+#define LBN_TO_PBN_MAP_ADDR	(RESERVED1_START_ADDR + sizeof(LOGICAL_BLOCK_MAP))
+#define PBN_TO_LBN_MAP_ADDR	(LBN_TO_PBN_MAP_ADDR + sizeof(PHYSICAL_BLOCK_MAP))
 
 //for logical to virtual translation
 typedef struct _LOGICAL_SLICE_ENTRY {
@@ -145,7 +145,7 @@ typedef struct _PHYSICAL_BLOCK_ENTRY {
 } PHYSICAL_BLOCK_ENTRY, *P_PHYSICAL_BLOCK_ENTRY;
 
 typedef struct _PHYSICAL_BLOCK_MAP {
-	PHYSICAL_BLOCK_ENTRY physicalBlock[USER_DIES][USER_BLOCKS_PER_SSD];
+	PHYSICAL_BLOCK_ENTRY physicalBlock[USER_DIES][USER_BLOCKS_PER_DIE];
 } PHYSICAL_BLOCK_MAP, *P_PHYSICAL_BLOCK_MAP;
 
 
@@ -212,7 +212,7 @@ void InitBlockDieMap();
 
 unsigned int AddrTransRead(unsigned int logicalSliceAddr);
 unsigned int AddrTransWrite(unsigned int logicalSliceAddr);
-unsigned int FindFreeVirtualSlice(unsigned int lbn, unsigned int offset);
+unsigned int FindFreeVirtualSlice(unsigned int lbn, unsigned int offset, unsigned int prevVsa);
 unsigned int FindFreeVirtualSliceForGc(unsigned int copyTargetDieNo, unsigned int victimBlockNo);
 unsigned int FindDieForFreeSliceAllocation();
 
