@@ -212,12 +212,12 @@ void InitBlockDieMap();
 
 unsigned int AddrTransRead(unsigned int logicalSliceAddr);
 unsigned int AddrTransWrite(unsigned int logicalSliceAddr);
-unsigned int FindFreeVirtualSlice(unsigned int lbn, unsigned int offset, unsigned int prevVsa);
+unsigned int FindFreeVirtualSlice(unsigned int lbn, unsigned int offset);
 unsigned int FindFreeVirtualSliceForGc(unsigned int copyTargetDieNo, unsigned int victimBlockNo);
 unsigned int FindDieForFreeSliceAllocation();
 
 void InvalidateOldVsa(unsigned int logicalSliceAddr);
-void InvalidateOldBlock(unsigned int lbn);
+void InvalidateOldBlock(unsigned int lbn, unsigned int dieNo);
 void EraseBlock(unsigned int dieNo, unsigned int blockNo);
 
 void PutToFbList(unsigned int dieNo, unsigned int blockNo);

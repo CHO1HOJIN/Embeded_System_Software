@@ -663,19 +663,22 @@ unsigned int AddrTransRead(unsigned int logicalSliceAddr)
 	if(logicalSliceAddr < SLICES_PER_SSD)
 	{
 
-		lbn = logicalSliceAddr / SLICES_PER_BLOCK;
-		offset = logicalSliceAddr % SLICES_PER_BLOCK;
+		lbn = logicalSliceAddr / USER_PAGES_PER_BLOCK;
+		offset = logicalSliceAddr % USER_PAGES_PER_BLOCK;
 		pbn = lbn2pbnMapPtr->logicalBlock[lbn].pbn;
 		dieNo = lbn2pbnMapPtr->logicalBlock[lbn].dieNo;
-		virtualSliceAddr = Vorg2VsaTranslation(dieNo, pbn, offset);
-
+		virtualSliceAddr = Vorg2VsaTranslation(dieNo, pbn, 0);
 		// virtualSliceAddr = logicalSliceMapPtr->logicalSlice[logicalSliceAddr].virtualSliceAddr;
 
-		if(virtualSliceAddr != VSA_NONE)
+		
+		//DEBUG
+		xil_printf("[FTL] AddrTransRead called: LSA %u -> VSA %u\r\n", logicalSliceAddr, virtualSliceAddr);
+
+		if(virtualSliceAddr != VSA_NONE && dieNo != DIE_NONE && pbn != BLOCK_NONE)
 			return virtualSliceAddr;
 		else{
 			//DEBUG
-			xil_printf("[ERROR] Read fail! Logical Slice Address: %d\r\n", logicalSliceAddr);
+			// xil_printf("[ERROR] Read fail! Logical Slice Address: %d\r\n", logicalSliceAddr);
 			return VSA_FAIL;
 		}
 	}
@@ -685,28 +688,20 @@ unsigned int AddrTransRead(unsigned int logicalSliceAddr)
 
 unsigned int AddrTransWrite(unsigned int logicalSliceAddr)
 {
-	unsigned int virtualSliceAddr, preVsa;
-	unsigned int lbn, offset;
+	unsigned int virtualSliceAddr;
+	unsigned int lbn, offset, dieNo, pbn;
 
 	if(logicalSliceAddr < SLICES_PER_SSD)
 	{
-		lbn = logicalSliceAddr / SLICES_PER_BLOCK;
-		offset = logicalSliceAddr % SLICES_PER_BLOCK;
-		preVsa = Vorg2VsaTranslation(lbn2pbnMapPtr->logicalBlock[lbn].dieNo,
-									lbn2pbnMapPtr->logicalBlock[lbn].pbn,
-									offset);
-
-		// overwrite
-		if (preVsa != VSA_NONE){
-			InvalidateOldBlock(lbn);
-			virtualSliceAddr = FindFreeVirtualSlice(lbn, offset, preVsa);
-		}
-		// new write
-		else{
-			InvalidateOldVsa(logicalSliceAddr);
-			virtualSliceAddr = FindFreeVirtualSlice(lbn, offset, VSA_NONE);
-		}
-
+		lbn = logicalSliceAddr / USER_PAGES_PER_BLOCK;
+		offset = logicalSliceAddr % USER_PAGES_PER_BLOCK;
+		
+		dieNo = lbn2pbnMapPtr->logicalBlock[lbn].dieNo;
+		pbn = lbn2pbnMapPtr->logicalBlock[lbn].pbn;
+		//DEBUG
+		xil_printf("[FTL] AddrTransWrite called: LSA %u\r\n", logicalSliceAddr);
+		virtualSliceAddr = FindFreeVirtualSlice(lbn, offset);
+		xil_printf("[FTL] New VSA allocated: VSA %u for LSA %u\r\n", virtualSliceAddr, logicalSliceAddr);
 		logicalSliceMapPtr->logicalSlice[logicalSliceAddr].virtualSliceAddr = virtualSliceAddr;
 		virtualSliceMapPtr->virtualSlice[virtualSliceAddr].logicalSliceAddr = logicalSliceAddr;
 
@@ -717,55 +712,63 @@ unsigned int AddrTransWrite(unsigned int logicalSliceAddr)
 }
 
 
-unsigned int FindFreeVirtualSlice(unsigned int lbn, unsigned int offset, unsigned int preVsa)
+unsigned int FindFreeVirtualSlice(unsigned int lbn, unsigned int offset)
 {
-	unsigned int currentBlock, virtualSliceAddr, dieNo;
+	//DEBUG
+	xil_printf("[FTL] FindFreeVirtualSlice called: LBN %u Offset %u\r\n", lbn, offset);
 
-	dieNo = sliceAllocationTargetDie;
-	currentBlock = virtualDieMapPtr->die[dieNo].currentBlock;
-	virtualBlockMapPtr->block[dieNo][currentBlock].currentPage = offset;
+    unsigned int dieNo, currentBlock, virtualSliceAddr;
+    unsigned int seqPage;
 
-	if(virtualBlockMapPtr->block[dieNo][currentBlock].currentPage == USER_PAGES_PER_BLOCK)
-	{
+    /* 1) LBN별로 이미 쓰던 블록이 있으면 그대로 사용 */
+    dieNo = lbn2pbnMapPtr->logicalBlock[lbn].dieNo;
+	currentBlock = lbn2pbnMapPtr->logicalBlock[lbn].pbn;
+
+    if(dieNo == DIE_NONE || currentBlock == BLOCK_NONE ||
+       virtualBlockMapPtr->block[dieNo][currentBlock].currentPage >= USER_PAGES_PER_BLOCK)
+    {
+        /* 2) 없거나 가득 차면 새 블록 할당 (기존 로직 재사용) */
+        dieNo = sliceAllocationTargetDie;
+		
+        // currentBlock = virtualDieMapPtr->die[dieNo].currentBlock;
+
+        // if(virtualBlockMapPtr->block[dieNo][currentBlock].currentPage >= USER_PAGES_PER_BLOCK)
+        // {
 		currentBlock = GetFromFbList(dieNo, GET_FREE_BLOCK_NORMAL);
-
-		if(currentBlock != BLOCK_FAIL)
-			virtualDieMapPtr->die[dieNo].currentBlock = currentBlock;
-		else
+		if(currentBlock == BLOCK_FAIL)
 		{
 			GarbageCollection(dieNo);
 			currentBlock = virtualDieMapPtr->die[dieNo].currentBlock;
-
-			if(virtualBlockMapPtr->block[dieNo][currentBlock].currentPage == USER_PAGES_PER_BLOCK)
-			{
+			if(virtualBlockMapPtr->block[dieNo][currentBlock].currentPage >= USER_PAGES_PER_BLOCK)
 				currentBlock = GetFromFbList(dieNo, GET_FREE_BLOCK_NORMAL);
-				if(currentBlock != BLOCK_FAIL)
-					virtualDieMapPtr->die[dieNo].currentBlock = currentBlock;
-				else
-					assert(!"[WARNING] There is no available block [WARNING]");
-			}
-			else if(virtualBlockMapPtr->block[dieNo][currentBlock].currentPage > USER_PAGES_PER_BLOCK)
-				assert(!"[WARNING] Current page management fail [WARNING]");
+			if(currentBlock == BLOCK_FAIL)
+				assert(!"[WARNING] There is no available block [WARNING]");
 		}
+		virtualDieMapPtr->die[dieNo].currentBlock = currentBlock;
+        // }
+
+		//DEBUG
+		xil_printf("[FTL] New block allocated: Die %u Block %u for LBN %u Pagenumber %u\r\n", dieNo, currentBlock, lbn, virtualBlockMapPtr->block[dieNo][currentBlock].currentPage);
+
+        lbn2pbnMapPtr->logicalBlock[lbn].dieNo = dieNo;
+        lbn2pbnMapPtr->logicalBlock[lbn].pbn = currentBlock;
+        pbn2lbnMapPtr->physicalBlock[dieNo][currentBlock].logicalBlockAddr = lbn;
+    }
+	else{
+		//DEBUG
+		xil_printf("[FTL] Using existing block: Die %u Block %u for LBN %u Pagenumber %u\r\n", dieNo, currentBlock, lbn, virtualBlockMapPtr->block[dieNo][currentBlock].currentPage);
 	}
-	else if(virtualBlockMapPtr->block[dieNo][currentBlock].currentPage > USER_PAGES_PER_BLOCK)
-		assert(!"[WARNING] Current page management fail [WARNING]");
 
-	//DEBUG
-	if(offset != virtualBlockMapPtr->block[dieNo][currentBlock].currentPage)
-		xil_printf("[ERROR] Slice offset mismatch! Die: %d, Block: %d, Offset: %d, CurrentPage: %d\r\n", dieNo, currentBlock, offset, virtualBlockMapPtr->block[dieNo][currentBlock].currentPage);
+    if(virtualBlockMapPtr->block[dieNo][currentBlock].currentPage > USER_PAGES_PER_BLOCK)
+        assert(!"[WARNING] Current page management fail [WARNING]");
 
-	lbn2pbnMapPtr->logicalBlock[lbn].dieNo = dieNo;
-	lbn2pbnMapPtr->logicalBlock[lbn].pbn = currentBlock;
-	pbn2lbnMapPtr->physicalBlock[dieNo][currentBlock].logicalBlockAddr = lbn;
-	
-	virtualSliceAddr = Vorg2VsaTranslation(dieNo, currentBlock, offset);
-	virtualBlockMapPtr->block[dieNo][currentBlock].currentPage = offset + 1;
-	sliceAllocationTargetDie = FindDieForFreeSliceAllocation();
-	dieNo = sliceAllocationTargetDie;
-	return virtualSliceAddr;
+    seqPage = virtualBlockMapPtr->block[dieNo][currentBlock].currentPage;
+    virtualSliceAddr = Vorg2VsaTranslation(dieNo, currentBlock, seqPage);
+    virtualBlockMapPtr->block[dieNo][currentBlock].currentPage++;
+
+    sliceAllocationTargetDie = FindDieForFreeSliceAllocation();
+    return virtualSliceAddr;
 }
-
 
 unsigned int FindFreeVirtualSliceForGc(unsigned int copyTargetDieNo, unsigned int victimBlockNo)
 {
@@ -843,7 +846,7 @@ void InvalidateOldVsa(unsigned int logicalSliceAddr)
 
 }
 
-void InvalidateOldBlock(unsigned int lbn)
+void InvalidateOldBlock(unsigned int lbn, unsigned int offset)
 {
     unsigned int dieNo = VSA_NONE;
     unsigned int blockNo = VSA_NONE;
@@ -889,6 +892,11 @@ void InvalidateOldBlock(unsigned int lbn)
         PutToGcVictimList(dieNo, blockNo, 
             virtualBlockMapPtr->block[dieNo][blockNo].invalidSliceCnt);
     }
+
+	// block mapping 초기화
+	lbn2pbnMapPtr->logicalBlock[lbn].dieNo = DIE_NONE;
+	lbn2pbnMapPtr->logicalBlock[lbn].pbn = BLOCK_NONE;
+	pbn2lbnMapPtr->physicalBlock[dieNo][blockNo].logicalBlockAddr = BLOCK_NONE;
 }
 
 
