@@ -80,13 +80,6 @@ void InitAddressMap()
     lbn2pbnMapPtr = (P_LOGICAL_BLOCK_MAP) lbnMapAddr;
     pbn2lbnMapPtr = (P_PHYSICAL_BLOCK_MAP) pbnMapAddr;
 
-	//DEBUG
-	xil_printf("Block-level FTL mapping:\r\n");
-    xil_printf("  RESERVED1_START_ADDR: 0x%08X\r\n", RESERVED1_START_ADDR);
-    xil_printf("  LBN2PBN Map: 0x%08X (size: %d)\r\n", lbnMapAddr, sizeof(LOGICAL_BLOCK_MAP));
-    xil_printf("  PBN2LBN Map: 0x%08X (size: %d)\r\n", pbnMapAddr, sizeof(PHYSICAL_BLOCK_MAP));
-    xil_printf("  End Address: 0x%08X\r\n", pbnMapAddr + sizeof(PHYSICAL_BLOCK_MAP));
-    
 	//Initialize
 	for(unsigned int lbn = 0; lbn < USER_BLOCKS_PER_SSD; lbn++)
 	{
@@ -665,22 +658,20 @@ unsigned int AddrTransRead(unsigned int logicalSliceAddr)
 
 		lbn = logicalSliceAddr / USER_PAGES_PER_BLOCK;
 		offset = logicalSliceAddr % USER_PAGES_PER_BLOCK;
+
 		pbn = lbn2pbnMapPtr->logicalBlock[lbn].pbn;
 		dieNo = lbn2pbnMapPtr->logicalBlock[lbn].dieNo;
-		virtualSliceAddr = Vorg2VsaTranslation(dieNo, pbn, 0);
-		// virtualSliceAddr = logicalSliceMapPtr->logicalSlice[logicalSliceAddr].virtualSliceAddr;
-
 		
-		//DEBUG
-		xil_printf("[FTL] AddrTransRead called: LSA %u -> VSA %u\r\n", logicalSliceAddr, virtualSliceAddr);
-
+		// If we manage the offset within block, we can use offset here.
+		// But in this FTL, we do not manage the offset in block.
+		// So, we set offset to 0. 
+		// (It means that we always read from the first page of block)
+		virtualSliceAddr = Vorg2VsaTranslation(dieNo, pbn, 0);
+	
 		if(virtualSliceAddr != VSA_NONE && dieNo != DIE_NONE && pbn != BLOCK_NONE)
 			return virtualSliceAddr;
-		else{
-			//DEBUG
-			// xil_printf("[ERROR] Read fail! Logical Slice Address: %d\r\n", logicalSliceAddr);
+		else
 			return VSA_FAIL;
-		}
 	}
 	else
 		assert(!"[WARNING] Logical address is larger than maximum logical address served by SSD [WARNING]");
@@ -698,10 +689,20 @@ unsigned int AddrTransWrite(unsigned int logicalSliceAddr)
 		
 		dieNo = lbn2pbnMapPtr->logicalBlock[lbn].dieNo;
 		pbn = lbn2pbnMapPtr->logicalBlock[lbn].pbn;
-		//DEBUG
-		xil_printf("[FTL] AddrTransWrite called: LSA %u\r\n", logicalSliceAddr);
+
+		//Overwrite
+		if(dieNo != DIE_NONE && pbn != BLOCK_NONE){
+			//Invalidate all slices in the block
+			for(unsigned int i = 0; i < SLICES_PER_BLOCK; i++){
+				unsigned int lpn = lbn * USER_PAGES_PER_BLOCK + i;
+				InvalidateOldVsa(lpn);
+			}
+		}
+		//New write
+		else InvalidateOldVsa(logicalSliceAddr);
+
 		virtualSliceAddr = FindFreeVirtualSlice(lbn, offset);
-		xil_printf("[FTL] New VSA allocated: VSA %u for LSA %u\r\n", virtualSliceAddr, logicalSliceAddr);
+
 		logicalSliceMapPtr->logicalSlice[logicalSliceAddr].virtualSliceAddr = virtualSliceAddr;
 		virtualSliceMapPtr->virtualSlice[virtualSliceAddr].logicalSliceAddr = logicalSliceAddr;
 
@@ -714,9 +715,6 @@ unsigned int AddrTransWrite(unsigned int logicalSliceAddr)
 
 unsigned int FindFreeVirtualSlice(unsigned int lbn, unsigned int offset)
 {
-	//DEBUG
-	xil_printf("[FTL] FindFreeVirtualSlice called: LBN %u Offset %u\r\n", lbn, offset);
-
     unsigned int dieNo, currentBlock, virtualSliceAddr;
     unsigned int seqPage;
 
@@ -730,10 +728,6 @@ unsigned int FindFreeVirtualSlice(unsigned int lbn, unsigned int offset)
         /* 2) 없거나 가득 차면 새 블록 할당 (기존 로직 재사용) */
         dieNo = sliceAllocationTargetDie;
 		
-        // currentBlock = virtualDieMapPtr->die[dieNo].currentBlock;
-
-        // if(virtualBlockMapPtr->block[dieNo][currentBlock].currentPage >= USER_PAGES_PER_BLOCK)
-        // {
 		currentBlock = GetFromFbList(dieNo, GET_FREE_BLOCK_NORMAL);
 		if(currentBlock == BLOCK_FAIL)
 		{
@@ -745,19 +739,10 @@ unsigned int FindFreeVirtualSlice(unsigned int lbn, unsigned int offset)
 				assert(!"[WARNING] There is no available block [WARNING]");
 		}
 		virtualDieMapPtr->die[dieNo].currentBlock = currentBlock;
-        // }
-
-		//DEBUG
-		xil_printf("[FTL] New block allocated: Die %u Block %u for LBN %u Pagenumber %u\r\n", dieNo, currentBlock, lbn, virtualBlockMapPtr->block[dieNo][currentBlock].currentPage);
-
         lbn2pbnMapPtr->logicalBlock[lbn].dieNo = dieNo;
         lbn2pbnMapPtr->logicalBlock[lbn].pbn = currentBlock;
         pbn2lbnMapPtr->physicalBlock[dieNo][currentBlock].logicalBlockAddr = lbn;
     }
-	else{
-		//DEBUG
-		xil_printf("[FTL] Using existing block: Die %u Block %u for LBN %u Pagenumber %u\r\n", dieNo, currentBlock, lbn, virtualBlockMapPtr->block[dieNo][currentBlock].currentPage);
-	}
 
     if(virtualBlockMapPtr->block[dieNo][currentBlock].currentPage > USER_PAGES_PER_BLOCK)
         assert(!"[WARNING] Current page management fail [WARNING]");
@@ -845,60 +830,6 @@ void InvalidateOldVsa(unsigned int logicalSliceAddr)
 	}
 
 }
-
-void InvalidateOldBlock(unsigned int lbn, unsigned int offset)
-{
-    unsigned int dieNo = VSA_NONE;
-    unsigned int blockNo = VSA_NONE;
-    unsigned int invalidCount = 0;
-    unsigned int firstValidVsa = VSA_NONE;
-    
-    // 1단계: 블록 내 모든 슬라이스 스캔 및 블록 정보 수집
-    for(unsigned int i = 0; i < SLICES_PER_BLOCK; i++)
-    {
-        unsigned int lsa = lbn * SLICES_PER_BLOCK + i;
-        unsigned int vsa = logicalSliceMapPtr->logicalSlice[lsa].virtualSliceAddr;
-        
-        if(vsa != VSA_NONE)
-        {
-            // 매핑 일관성 체크
-            if(virtualSliceMapPtr->virtualSlice[vsa].logicalSliceAddr != lsa)
-                continue;
-            
-            // 첫 번째 유효한 VSA에서 블록 정보 획득
-            if(firstValidVsa == VSA_NONE)
-            {
-                firstValidVsa = vsa;
-                dieNo = Vsa2VdieTranslation(vsa);
-                blockNo = Vsa2VblockTranslation(vsa);
-            }
-            
-            // 논리 매핑 해제
-            logicalSliceMapPtr->logicalSlice[lsa].virtualSliceAddr = VSA_NONE;
-            invalidCount++;
-        }
-    }
-    
-    // 2단계: 무효화된 슬라이스가 있으면 GC victim list 업데이트
-    if(invalidCount > 0 && dieNo != VSA_NONE)
-    {
-        // GC victim list에서 블록 제거
-        SelectiveGetFromGcVictimList(dieNo, blockNo);
-        
-        // invalidSliceCnt 업데이트
-        virtualBlockMapPtr->block[dieNo][blockNo].invalidSliceCnt += invalidCount;
-        
-        // GC victim list에 재추가
-        PutToGcVictimList(dieNo, blockNo, 
-            virtualBlockMapPtr->block[dieNo][blockNo].invalidSliceCnt);
-    }
-
-	// block mapping 초기화
-	lbn2pbnMapPtr->logicalBlock[lbn].dieNo = DIE_NONE;
-	lbn2pbnMapPtr->logicalBlock[lbn].pbn = BLOCK_NONE;
-	pbn2lbnMapPtr->physicalBlock[dieNo][blockNo].logicalBlockAddr = BLOCK_NONE;
-}
-
 
 void EraseBlock(unsigned int dieNo, unsigned int blockNo)
 {

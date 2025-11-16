@@ -217,7 +217,6 @@ unsigned int FindFreeVirtualSliceForGc(unsigned int copyTargetDieNo, unsigned in
 unsigned int FindDieForFreeSliceAllocation();
 
 void InvalidateOldVsa(unsigned int logicalSliceAddr);
-void InvalidateOldBlock(unsigned int lbn, unsigned int dieNo);
 void EraseBlock(unsigned int dieNo, unsigned int blockNo);
 
 void PutToFbList(unsigned int dieNo, unsigned int blockNo);
