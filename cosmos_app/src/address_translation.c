@@ -73,14 +73,14 @@ void InitAddressMap()
 	phyBlockMapPtr = (P_PHY_BLOCK_MAP) PHY_BLOCK_MAP_ADDR;
 	bbtInfoMapPtr = (P_BAD_BLOCK_TABLE_INFO_MAP) BAD_BLOCK_TABLE_INFO_MAP_ADDR;
 
-	//HJ
+	// Memory allocation
     unsigned int lbnMapAddr = RESERVED1_START_ADDR;
     unsigned int pbnMapAddr = lbnMapAddr + sizeof(LOGICAL_BLOCK_MAP);
     
     lbn2pbnMapPtr = (P_LOGICAL_BLOCK_MAP) lbnMapAddr;
     pbn2lbnMapPtr = (P_PHYSICAL_BLOCK_MAP) pbnMapAddr;
 
-	//Initialize
+	// Initialize
 	for(unsigned int lbn = 0; lbn < USER_BLOCKS_PER_SSD; lbn++)
 	{
         lbn2pbnMapPtr->logicalBlock[lbn].dieNo = DIE_NONE;
@@ -95,7 +95,6 @@ void InitAddressMap()
         }
     }
 
-	//init phyblockMap
 	for(dieNo=0 ; dieNo<USER_DIES ; dieNo++)
 	{
 		for(blockNo=0 ; blockNo<TOTAL_BLOCKS_PER_DIE ; blockNo++)
@@ -686,22 +685,8 @@ unsigned int AddrTransWrite(unsigned int logicalSliceAddr)
 	{
 		lbn = logicalSliceAddr / USER_PAGES_PER_BLOCK;
 		offset = logicalSliceAddr % USER_PAGES_PER_BLOCK;
-		
-		dieNo = lbn2pbnMapPtr->logicalBlock[lbn].dieNo;
-		pbn = lbn2pbnMapPtr->logicalBlock[lbn].pbn;
 
-		//Overwrite
-		if(dieNo != DIE_NONE && pbn != BLOCK_NONE){
-			//Invalidate all slices in the block
-			for(unsigned int i = 0; i < SLICES_PER_BLOCK; i++){
-				unsigned int lpn = lbn * USER_PAGES_PER_BLOCK + i;
-				InvalidateOldVsa(lpn);
-			}
-		}
-		//New write
-		else InvalidateOldVsa(logicalSliceAddr);
-
-		virtualSliceAddr = FindFreeVirtualSlice(lbn, offset);
+		virtualSliceAddr = FindFreeVirtualSlice(lbn);
 
 		logicalSliceMapPtr->logicalSlice[logicalSliceAddr].virtualSliceAddr = virtualSliceAddr;
 		virtualSliceMapPtr->virtualSlice[virtualSliceAddr].logicalSliceAddr = logicalSliceAddr;
@@ -713,7 +698,7 @@ unsigned int AddrTransWrite(unsigned int logicalSliceAddr)
 }
 
 
-unsigned int FindFreeVirtualSlice(unsigned int lbn, unsigned int offset)
+unsigned int FindFreeVirtualSlice(unsigned int lbn)
 {
     unsigned int dieNo, currentBlock, virtualSliceAddr;
     unsigned int seqPage;

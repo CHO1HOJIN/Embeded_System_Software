@@ -212,7 +212,7 @@ void InitBlockDieMap();
 
 unsigned int AddrTransRead(unsigned int logicalSliceAddr);
 unsigned int AddrTransWrite(unsigned int logicalSliceAddr);
-unsigned int FindFreeVirtualSlice(unsigned int lbn, unsigned int offset);
+unsigned int FindFreeVirtualSlice(unsigned int lbn);
 unsigned int FindFreeVirtualSliceForGc(unsigned int copyTargetDieNo, unsigned int victimBlockNo);
 unsigned int FindDieForFreeSliceAllocation();
 
