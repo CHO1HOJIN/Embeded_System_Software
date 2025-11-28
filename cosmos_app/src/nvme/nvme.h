@@ -83,6 +83,11 @@
 #define IO_NVM_FLUSH										0x00
 #define IO_NVM_WRITE										0x01
 #define IO_NVM_READ											0x02
+/*Opcodes for Key-Value Commands */
+#define IO_KV_PUT											0xA0
+#define IO_KV_GET											0xA1
+#define ENOSUCHKEY											0x7C1
+
 /* === Block-Level FTL (ESS4116) === */
 #define IO_NVM_FTL_MAP											0x03
 /* ================================= */

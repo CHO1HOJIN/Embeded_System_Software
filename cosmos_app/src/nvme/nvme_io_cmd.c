@@ -61,6 +61,165 @@
 #include "../ftl_config.h"
 #include "../request_transform.h"
 #include "../address_translation.h"
+#include "../memory_map.h"
+
+P_KV_MAP kvMapPtr;
+unsigned int kvNextLogicalSliceAddr;
+
+// 해시 함수
+unsigned int KvHash(unsigned int key) {
+    return key % KV_MAX_ENTRIES;
+}
+
+void InitKvStore()
+{
+    unsigned int i;
+    
+    kvMapPtr = (P_KV_MAP)KV_MAP_ADDR;
+    
+    // KV 맵 초기화
+    for (i = 0; i < KV_MAX_ENTRIES; i++) {
+        kvMapPtr->kvEntry[i].key = 0;
+        kvMapPtr->kvEntry[i].logicalSliceAddr = KV_ENTRY_NONE;
+        kvMapPtr->kvEntry[i].valid = KV_ENTRY_INVALID;
+    }
+    
+    // 논리 슬라이스 주소 초기화 (KV 전용 영역)
+    kvNextLogicalSliceAddr = 0;
+    
+    xil_printf("[KV] Key-Value Store initialized (max %d entries)\r\n", KV_MAX_ENTRIES);
+}
+
+// 해시 테이블에서 키 조회 (Linear Probing)
+// 반환: 찾으면 인덱스, 없으면 -1
+int KvLookup(unsigned int key)
+{
+    unsigned int startIdx = KvHash(key);
+    unsigned int idx = startIdx;
+    unsigned int count = 0;
+    
+    while (count < KV_MAX_ENTRIES) {
+        if (kvMapPtr->kvEntry[idx].valid == KV_ENTRY_INVALID) {
+            // 빈 슬롯 만남 - 키 없음
+            return -1;
+        }
+        
+        if (kvMapPtr->kvEntry[idx].valid == KV_ENTRY_VALID &&
+            kvMapPtr->kvEntry[idx].key == key) {
+            // 키 찾음
+            return (int)idx;
+        }
+        
+        // 다음 슬롯으로 (Linear Probing)
+        idx = (idx + 1) % KV_MAX_ENTRIES;
+        count++;
+    }
+    
+    return -1;  // 전체 탐색 후 없음
+}
+
+// 해시 테이블에서 삽입할 위치 찾기
+// 반환: 삽입 가능한 인덱스, 가득 차면 -1
+static int FindSlotForInsert(unsigned int key)
+{
+    unsigned int startIdx = KvHash(key);
+    unsigned int idx = startIdx;
+    unsigned int count = 0;
+    
+    while (count < KV_MAX_ENTRIES) {
+        // 빈 슬롯이거나 같은 키가 있는 슬롯
+        if (kvMapPtr->kvEntry[idx].valid == KV_ENTRY_INVALID) {
+            return (int)idx;
+        }
+        
+        if (kvMapPtr->kvEntry[idx].valid == KV_ENTRY_VALID &&
+            kvMapPtr->kvEntry[idx].key == key) {
+            // 기존 키 위치 반환 (업데이트용)
+            return (int)idx;
+        }
+        
+        // 다음 슬롯으로 (Linear Probing)
+        idx = (idx + 1) % KV_MAX_ENTRIES;
+        count++;
+    }
+    
+    return -1;  // 테이블 가득 참
+}
+
+// 논리 슬라이스 주소 할당
+static unsigned int AllocateLogicalSlice()
+{
+    unsigned int addr = kvNextLogicalSliceAddr;
+    kvNextLogicalSliceAddr++;
+    
+    // Wrap around 방지 (실제로는 GC가 필요하지만 단순화)
+    if (kvNextLogicalSliceAddr >= SLICES_PER_SSD) {
+        kvNextLogicalSliceAddr = 0;
+    }
+    return addr;
+}
+
+// KV Put 핸들러
+int handle_nvme_io_kv_put(unsigned int key, unsigned int cmdSlotTag, unsigned int nlb)
+{
+    int existingIdx = KvLookup(key);
+    int targetIdx;
+    unsigned int logicalSliceAddr;
+    
+    if (existingIdx >= 0) {
+        // 기존 키 업데이트
+        targetIdx = existingIdx;
+        logicalSliceAddr = kvMapPtr->kvEntry[targetIdx].logicalSliceAddr;
+        
+        // 기존 슬라이스 무효화
+        if (logicalSliceAddr != KV_ENTRY_NONE) {
+            InvalidateOldVsa(logicalSliceAddr);
+        }
+        // 새 슬라이스 할당
+        logicalSliceAddr = AllocateLogicalSlice();
+    } else {
+        // 새 키 삽입 - 해시 위치 찾기
+        targetIdx = FindSlotForInsert(key);
+        if (targetIdx < 0) {
+            xil_printf("[KV] Error: Hash table full\r\n");
+            return -1;
+        }
+        logicalSliceAddr = AllocateLogicalSlice();
+    }
+    
+    // 엔트리 업데이트
+    kvMapPtr->kvEntry[targetIdx].key = key;
+    kvMapPtr->kvEntry[targetIdx].logicalSliceAddr = logicalSliceAddr;
+    kvMapPtr->kvEntry[targetIdx].valid = KV_ENTRY_VALID;
+    
+    // 호스트에서 데이터 수신 (RxDMA) - 기존 Write 로직 활용
+    ReqTransNvmeToSlice(cmdSlotTag, logicalSliceAddr, nlb, IO_NVM_WRITE);
+    
+    return 0;
+}
+
+// KV Get 핸들러
+int handle_nvme_io_kv_get(unsigned int key, unsigned int cmdSlotTag, unsigned int *valueLen)
+{
+    int idx = KvLookup(key);
+    
+    if (idx < 0) {
+        // 키 없음
+        *valueLen = 0;
+        return ENOSUCHKEY;
+    }
+    
+    unsigned int logicalSliceAddr = kvMapPtr->kvEntry[idx].logicalSliceAddr;
+    
+    // 값 길이 설정 (4KB 고정)
+    *valueLen = KV_VALUE_SIZE;
+    
+    // 호스트로 데이터 전송 (TxDMA) - 기존 Read 로직 활용
+    ReqTransNvmeToSlice(cmdSlotTag, logicalSliceAddr, 0, IO_NVM_READ);
+    
+    return 0;
+}
+
 
 void handle_nvme_io_read(unsigned int cmdSlotTag, NVME_IO_COMMAND *nvmeIOCmd)
 {
@@ -224,6 +383,50 @@ void handle_nvme_io_cmd(NVME_COMMAND *nvmeCmd)
 			break;
 		}
 		/* ================================= */
+		/* ============ Key-Value =========== */
+        case IO_KV_PUT:
+        {
+            // CDW10 = key, CDW12 = nlb
+            unsigned int key = nvmeIOCmd->dword10;
+            unsigned int nlb = nvmeIOCmd->dword12 & 0xFFFF;
+            
+            int ret = handle_nvme_io_kv_put(key, nvmeCmd->cmdSlotTag, nlb);
+            
+            // completion은 DMA 완료 후 자동 처리됨 (ReqTransNvmeToSlice에서)
+            // 에러 시에만 즉시 completion
+            if (ret < 0) {
+                nvmeCPL.dword[0] = 0;
+                nvmeCPL.specific = 0x1;  // 에러
+                set_auto_nvme_cpl(nvmeCmd->cmdSlotTag, nvmeCPL.specific, nvmeCPL.statusFieldWord);
+            }
+            break;
+        }
+        case IO_KV_GET:
+        {
+            // CDW10 = key
+            unsigned int key = nvmeIOCmd->dword10;
+            unsigned int valueLen = 0;
+            
+            int ret = handle_nvme_io_kv_get(key, nvmeCmd->cmdSlotTag, &valueLen);
+            
+            if (ret == ENOSUCHKEY) {
+                // 키 없음 - ENOSUCHKEY 반환
+                nvmeCPL.dword[0] = 0;
+                nvmeCPL.specific = ENOSUCHKEY;
+                set_nvme_cpl(nvmeCmd->qID, nvmeCmd->cmdSlotTag, nvmeCPL.specific, nvmeCPL.statusFieldWord);
+                break;
+            }
+            
+            // 성공 시 completion은 DMA 완료 후 처리
+            // result에 valueLen 설정 필요
+            if (ret < 0) {
+                nvmeCPL.dword[0] = 0;
+                nvmeCPL.specific = 0x1;
+                set_auto_nvme_cpl(nvmeCmd->cmdSlotTag, nvmeCPL.specific, nvmeCPL.statusFieldWord);
+            }
+            break;
+        }
+
 		default:
 		{
 			xil_printf("Not Support IO Command OPC: %X\r\n", opc);

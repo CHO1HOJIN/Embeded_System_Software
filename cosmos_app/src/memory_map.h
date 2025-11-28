@@ -104,6 +104,17 @@
 #define FTL_MANAGEMENT_END_ADDR				((WAY_PRIORITY_TABLE_ADDR + sizeof(WAY_PRIORITY_TABLE))- 1)
 
 #define RESERVED1_START_ADDR				(FTL_MANAGEMENT_END_ADDR + 1)
+/* ==== Key-Value ==== */
+#define KV_MAP_SIZE                         (KV_MAX_ENTRIES * 16)  // 64KB
+#define KV_HASH_TABLE_SIZE                  (KV_MAX_ENTRIES * 4)   // 16KB
+
+// KV 엔트리 맵
+#define KV_MAP_ADDR                         RESERVED1_START_ADDR
+// 해시 테이블 (버킷당 head/tail 포인터)
+#define KV_HASH_TABLE_ADDR                  (KV_MAP_ADDR + KV_MAP_SIZE)
+#define KV_MANAGEMENT_END_ADDR              (KV_HASH_TABLE_ADDR + KV_HASH_TABLE_SIZE - 1)
+/* =================== */
+
 #define RESERVED1_END_ADDR					0x3FFFFFFF
 
 #define DRAM_END_ADDR						0x3FFFFFFF
