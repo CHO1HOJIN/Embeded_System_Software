@@ -85,6 +85,7 @@ void InitAddressMap()
 
 	InitSliceMap();
 	InitBlockDieMap();
+	InitKvStore();
 }
 
 void InitSliceMap()

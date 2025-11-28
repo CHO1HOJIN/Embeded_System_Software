@@ -46,7 +46,7 @@
 
 #ifndef __NVME_IO_CMD_H_
 #define __NVME_IO_CMD_H_
-
+#include "../memory_map.h"
 
 void handle_nvme_io_cmd(NVME_COMMAND *nvmeCmd);
 
@@ -60,6 +60,7 @@ void handle_nvme_io_cmd(NVME_COMMAND *nvmeCmd);
 #define KV_ENTRY_INVALID        0
 #define KV_ENTRY_VALID          1
 
+
 // Key-Value 매핑 엔트리
 typedef struct _KV_ENTRY {
     unsigned int key;                       // 4바이트 키
@@ -67,18 +68,17 @@ typedef struct _KV_ENTRY {
     unsigned int valid;                     // 유효 플래그
 } KV_ENTRY, *P_KV_ENTRY;
 
-// Key-Value 맵
+
+// Key-Value Hash 테이블
 typedef struct _KV_MAP {
     KV_ENTRY kvEntry[KV_MAX_ENTRIES];
+    unsigned int nextLogicalSliceAddr;
 } KV_MAP, *P_KV_MAP;
+
+#define KV_MAP_ADDR            (RESERVED1_START_ADDR + sizeof(KV_MAP))
 
 // 함수 선언
 void InitKvStore();
 int KvLookup(unsigned int key);
-int handle_nvme_io_kv_put(unsigned int key, unsigned int cmdSlotTag, unsigned int nlb);
-int handle_nvme_io_kv_get(unsigned int key, unsigned int cmdSlotTag, unsigned int *valueLen);
-
-extern P_KV_MAP kvMapPtr;
-extern unsigned int kvNextLogicalSliceAddr;
 
 #endif	//__NVME_IO_CMD_H_

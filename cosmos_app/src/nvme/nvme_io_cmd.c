@@ -61,7 +61,6 @@
 #include "../ftl_config.h"
 #include "../request_transform.h"
 #include "../address_translation.h"
-#include "../memory_map.h"
 
 P_KV_MAP kvMapPtr;
 unsigned int kvNextLogicalSliceAddr;
@@ -76,16 +75,14 @@ void InitKvStore()
     unsigned int i;
     
     kvMapPtr = (P_KV_MAP)KV_MAP_ADDR;
-    
+    kvMapPtr->nextLogicalSliceAddr = 0;
+
     // KV 맵 초기화
     for (i = 0; i < KV_MAX_ENTRIES; i++) {
         kvMapPtr->kvEntry[i].key = 0;
         kvMapPtr->kvEntry[i].logicalSliceAddr = KV_ENTRY_NONE;
         kvMapPtr->kvEntry[i].valid = KV_ENTRY_INVALID;
     }
-    
-    // 논리 슬라이스 주소 초기화 (KV 전용 영역)
-    kvNextLogicalSliceAddr = 0;
     
     xil_printf("[KV] Key-Value Store initialized (max %d entries)\r\n", KV_MAX_ENTRIES);
 }
@@ -146,76 +143,73 @@ static int FindSlotForInsert(unsigned int key)
     return -1;  // 테이블 가득 참
 }
 
-// 논리 슬라이스 주소 할당
-static unsigned int AllocateLogicalSlice()
-{
-    unsigned int addr = kvNextLogicalSliceAddr;
-    kvNextLogicalSliceAddr++;
-    
-    // Wrap around 방지 (실제로는 GC가 필요하지만 단순화)
-    if (kvNextLogicalSliceAddr >= SLICES_PER_SSD) {
-        kvNextLogicalSliceAddr = 0;
-    }
-    return addr;
-}
-
 // KV Put 핸들러
-int handle_nvme_io_kv_put(unsigned int key, unsigned int cmdSlotTag, unsigned int nlb)
+int handle_nvme_io_kv_put(unsigned int cmdSlotTag, NVME_IO_COMMAND *nvmeIOCmd)
 {
+    unsigned int key = nvmeIOCmd->dword10;
+    
     int existingIdx = KvLookup(key);
     int targetIdx;
     unsigned int logicalSliceAddr;
     
     if (existingIdx >= 0) {
-        // 기존 키 업데이트
+        // 기존 키 업데이트 - 같은 logicalSliceAddr 재사용
         targetIdx = existingIdx;
         logicalSliceAddr = kvMapPtr->kvEntry[targetIdx].logicalSliceAddr;
         
         // 기존 슬라이스 무효화
-        if (logicalSliceAddr != KV_ENTRY_NONE) {
-            InvalidateOldVsa(logicalSliceAddr);
-        }
-        // 새 슬라이스 할당
-        logicalSliceAddr = AllocateLogicalSlice();
-    } else {
-        // 새 키 삽입 - 해시 위치 찾기
+        InvalidateOldVsa(logicalSliceAddr);
+    } 
+    else {
+        // 새 키 삽입
         targetIdx = FindSlotForInsert(key);
         if (targetIdx < 0) {
             xil_printf("[KV] Error: Hash table full\r\n");
             return -1;
         }
-        logicalSliceAddr = AllocateLogicalSlice();
+        
+        // 새 logicalSliceAddr 순차 할당
+        logicalSliceAddr = kvMapPtr->nextLogicalSliceAddr;
+        kvMapPtr->nextLogicalSliceAddr++;
     }
     
-    // 엔트리 업데이트
+    ASSERT((nvmeIOCmd->PRP1[0] & 0xF) == 0 && (nvmeIOCmd->PRP2[0] & 0xF) == 0);
+    ASSERT(nvmeIOCmd->PRP1[1] < 0x10000 && nvmeIOCmd->PRP2[1] < 0x10000);
+    
+    // logicalSliceAddr를 startLba로 변환
+    unsigned int startLba = logicalSliceAddr * NVME_BLOCKS_PER_SLICE;
+    ReqTransNvmeToSlice(cmdSlotTag, startLba, 0, IO_NVM_WRITE);
+    
+    // 해시 테이블에 저장
     kvMapPtr->kvEntry[targetIdx].key = key;
     kvMapPtr->kvEntry[targetIdx].logicalSliceAddr = logicalSliceAddr;
     kvMapPtr->kvEntry[targetIdx].valid = KV_ENTRY_VALID;
-    
-    // 호스트에서 데이터 수신 (RxDMA) - 기존 Write 로직 활용
-    ReqTransNvmeToSlice(cmdSlotTag, logicalSliceAddr, nlb, IO_NVM_WRITE);
     
     return 0;
 }
 
 // KV Get 핸들러
-int handle_nvme_io_kv_get(unsigned int key, unsigned int cmdSlotTag, unsigned int *valueLen)
+// KV Get 핸들러
+int handle_nvme_io_kv_get(unsigned int cmdSlotTag, NVME_IO_COMMAND *nvmeIOCmd)
 {
+    unsigned int key = nvmeIOCmd->dword10;
+    
+    // 해시 테이블에서 key 조회
     int idx = KvLookup(key);
     
     if (idx < 0) {
         // 키 없음
-        *valueLen = 0;
         return ENOSUCHKEY;
     }
     
+    // 저장된 logicalSliceAddr 가져오기
     unsigned int logicalSliceAddr = kvMapPtr->kvEntry[idx].logicalSliceAddr;
     
-    // 값 길이 설정 (4KB 고정)
-    *valueLen = KV_VALUE_SIZE;
+    // logicalSliceAddr를 startLba로 변환
+    unsigned int startLba = logicalSliceAddr * NVME_BLOCKS_PER_SLICE;
     
-    // 호스트로 데이터 전송 (TxDMA) - 기존 Read 로직 활용
-    ReqTransNvmeToSlice(cmdSlotTag, logicalSliceAddr, 0, IO_NVM_READ);
+    // 호스트로 데이터 전송 (TxDMA)
+    ReqTransNvmeToSlice(cmdSlotTag, startLba, 0, IO_NVM_READ);
     
     return 0;
 }
@@ -386,46 +380,23 @@ void handle_nvme_io_cmd(NVME_COMMAND *nvmeCmd)
 		/* ============ Key-Value =========== */
         case IO_KV_PUT:
         {
-            // CDW10 = key, CDW12 = nlb
-            unsigned int key = nvmeIOCmd->dword10;
-            unsigned int nlb = nvmeIOCmd->dword12 & 0xFFFF;
             
-            int ret = handle_nvme_io_kv_put(key, nvmeCmd->cmdSlotTag, nlb);
-            
-            // completion은 DMA 완료 후 자동 처리됨 (ReqTransNvmeToSlice에서)
-            // 에러 시에만 즉시 completion
-            if (ret < 0) {
-                nvmeCPL.dword[0] = 0;
-                nvmeCPL.specific = 0x1;  // 에러
-                set_auto_nvme_cpl(nvmeCmd->cmdSlotTag, nvmeCPL.specific, nvmeCPL.statusFieldWord);
-            }
+            handle_nvme_io_kv_put(nvmeCmd->cmdSlotTag, nvmeIOCmd);
             break;
         }
-        case IO_KV_GET:
-        {
-            // CDW10 = key
-            unsigned int key = nvmeIOCmd->dword10;
-            unsigned int valueLen = 0;
-            
-            int ret = handle_nvme_io_kv_get(key, nvmeCmd->cmdSlotTag, &valueLen);
-            
-            if (ret == ENOSUCHKEY) {
-                // 키 없음 - ENOSUCHKEY 반환
-                nvmeCPL.dword[0] = 0;
-                nvmeCPL.specific = ENOSUCHKEY;
-                set_nvme_cpl(nvmeCmd->qID, nvmeCmd->cmdSlotTag, nvmeCPL.specific, nvmeCPL.statusFieldWord);
-                break;
-            }
-            
-            // 성공 시 completion은 DMA 완료 후 처리
-            // result에 valueLen 설정 필요
-            if (ret < 0) {
-                nvmeCPL.dword[0] = 0;
-                nvmeCPL.specific = 0x1;
-                set_auto_nvme_cpl(nvmeCmd->cmdSlotTag, nvmeCPL.specific, nvmeCPL.statusFieldWord);
-            }
-            break;
-        }
+		case IO_KV_GET:
+		{
+			int ret = handle_nvme_io_kv_get(nvmeCmd->cmdSlotTag, nvmeIOCmd);
+			
+			if (ret == ENOSUCHKEY) {
+				// 키 없음 - ENOSUCHKEY 에러 반환
+				nvmeCPL.dword[0] = 0;
+				nvmeCPL.specific = ENOSUCHKEY;
+				set_nvme_cpl(nvmeCmd->qID, nvmeCmd->cmdSlotTag, nvmeCPL.specific, nvmeCPL.statusFieldWord);
+			}
+			// 성공 시: auto completion에서 result=valueLen 설정 필요
+			break;
+		}
 
 		default:
 		{
