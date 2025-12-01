@@ -67,8 +67,6 @@ static hash_table_t kvHash;
 
 void InitHash()
 {
-	kvHash.bucket_count = HASH_COUNT;
-	kvHash.node_capacity = HASH_COUNT;
 	kvHash.node_count = 0;
 	kvHash.buckets = (uint32_t*)BUCKET_BASE;
 	kvHash.nodes = (hash_node_t*)NODE_BASE;
@@ -148,8 +146,7 @@ void handle_nvme_kv_put(unsigned int cmdSlotTag, NVME_IO_COMMAND *nvmeIOCmd)
 	if(idx == HASH_NULL)
 	{
 		//DEBUG
-		xil_printf("HASH IS FULL! key=0x%08X\r\n", key);
-
+		// xil_printf("HASH IS FULL! key=0x%08X\r\n", key);
 		nvmeCPL.statusField.SC = SC_INTERNAL_DEVICE_ERROR;
 		nvmeCPL.statusField.SCT = SCT_GENERIC_COMMAND_STATUS;
 		set_auto_nvme_cpl(cmdSlotTag, nvmeCPL.specific, nvmeCPL.statusFieldWord);
@@ -166,7 +163,8 @@ void handle_nvme_kv_put(unsigned int cmdSlotTag, NVME_IO_COMMAND *nvmeIOCmd)
 	xil_printf("KV_PUT key=0x%08X idx=%u lba=%u\r\n", key, idx, lba);
 
 	handle_nvme_io_write(cmdSlotTag, nvmeIOCmd);
-	return ;
+
+	return;
 }
 
 void handle_nvme_kv_get(unsigned int cmdSlotTag, NVME_IO_COMMAND *nvmeIOCmd)
@@ -183,7 +181,7 @@ void handle_nvme_kv_get(unsigned int cmdSlotTag, NVME_IO_COMMAND *nvmeIOCmd)
 	if(idx == HASH_NULL)
 	{
 		//DEBUG
-		xil_printf("KV_GET miss: key=0x%08X\r\n", key);
+		// xil_printf("KV_GET miss: key=0x%08X\r\n", key);
 		nvmeCPL.statusField.SC = NVME_STATUS_NO_SUCH_KEY;
 		nvmeCPL.statusField.SCT = SCT_VENDOR_SPECIFIC;
 		set_auto_nvme_cpl(cmdSlotTag, nvmeCPL.specific, nvmeCPL.statusFieldWord);
@@ -196,10 +194,13 @@ void handle_nvme_kv_get(unsigned int cmdSlotTag, NVME_IO_COMMAND *nvmeIOCmd)
 	nvmeIOCmd->dword[10] = lba;
 	nvmeIOCmd->dword[11] = 0;
 	nvmeIOCmd->dword[12] = 0;
+
+	//DEBUG
 	xil_printf("KV_GET key=0x%08X idx=%u lba=%u\r\n", key, idx, lba);
 
 	ReqTransNvmeToSlice(cmdSlotTag, lba, 0, IO_NVM_KV_GET);
-	return ;
+
+	return;
 }
 void handle_nvme_io_cmd(NVME_COMMAND *nvmeCmd)
 {
