@@ -60,7 +60,27 @@
 
 #include "../ftl_config.h"
 #include "../request_transform.h"
-#include "../address_translation.h"
+#include "../memory_map.h"
+#include "../hash.h"
+
+static hash_table_t kvHash;
+
+void InitHash()
+{
+	kvHash.bucket_count = HASH_COUNT;
+	kvHash.node_capacity = HASH_COUNT;
+	kvHash.node_count = 0;
+	kvHash.buckets = (uint32_t*)BUCKET_BASE;
+	kvHash.nodes = (hash_node_t*)NODE_BASE;
+	
+	for(uint32_t i = 0; i < HASH_COUNT; i++){
+		kvHash.buckets[i] = HASH_NULL;
+		kvHash.nodes[i].key = 0;
+		kvHash.nodes[i].lba = 0;
+		kvHash.nodes[i].next = HASH_NULL;
+	}
+
+}
 
 void handle_nvme_io_read(unsigned int cmdSlotTag, NVME_IO_COMMAND *nvmeIOCmd)
 {
@@ -92,103 +112,101 @@ void handle_nvme_io_read(unsigned int cmdSlotTag, NVME_IO_COMMAND *nvmeIOCmd)
 void handle_nvme_io_write(unsigned int cmdSlotTag, NVME_IO_COMMAND *nvmeIOCmd)
 {
 	IO_READ_COMMAND_DW12 writeInfo12;
-	//IO_READ_COMMAND_DW13 writeInfo13;
-	//IO_READ_COMMAND_DW15 writeInfo15;
 	unsigned int startLba[2];
 	unsigned int nlb;
 	unsigned int nsid = nvmeIOCmd->NSID;
 
 	writeInfo12.dword = nvmeIOCmd->dword[12];
-	//writeInfo13.dword = nvmeIOCmd->dword[13];
-	//writeInfo15.dword = nvmeIOCmd->dword[15];
-
-	//if(writeInfo12.FUA == 1)
-	//	xil_printf("write FUA\r\n");
 
 	startLba[0] = nvmeIOCmd->dword[10];
 	startLba[1] = nvmeIOCmd->dword[11];
 	nlb = writeInfo12.NLB;
 
 	ASSERT(startLba[0] < storageCapacity_L / USER_CHANNELS && (startLba[1] < STORAGE_CAPACITY_H || startLba[1] == 0));
-	//ASSERT(nlb < MAX_NUM_OF_NLB);
 	ASSERT((nvmeIOCmd->PRP1[0] & 0xF) == 0 && (nvmeIOCmd->PRP2[0] & 0xF) == 0);
 	ASSERT(nvmeIOCmd->PRP1[1] < 0x10000 && nvmeIOCmd->PRP2[1] < 0x10000);
 
 	ReqTransNvmeToSlice(cmdSlotTag, startLba[0] + (storageCapacity_L / USER_CHANNELS) * (nsid - 1), nlb, IO_NVM_WRITE);
 }
 
-/* === Block-Level FTL (ESS4116) === */
-void handle_nvme_io_mapping_info()
+void handle_nvme_kv_put(unsigned int cmdSlotTag, NVME_IO_COMMAND *nvmeIOCmd)
 {
-	unsigned int validLogicalCnt = 0;
-	unsigned int validVirtualCnt = 0;
+	NVME_COMPLETION nvmeCPL;
+	uint32_t key, lba, idx;
 
-	for (unsigned int i = 0; i < SLICES_PER_SSD; i++) {
-		if (logicalSliceMapPtr->logicalSlice[i].virtualSliceAddr != VSA_NONE)
-			validLogicalCnt++;
+	key = nvmeIOCmd->dword[10];
+	idx = hash_find(&kvHash, key);
 
-		if (virtualSliceMapPtr->virtualSlice[i].logicalSliceAddr != LSA_NONE)
-			validVirtualCnt++;
+	if(idx != HASH_NULL){
+		lba = kvHash.nodes[idx].lba;
+	}
+	else{
+		lba = kvHash.node_count;
+		idx = hash_insert(&kvHash, key, lba);
 	}
 
-	unsigned int mappedBlockCnt = 0;
-	unsigned int totalLogicalBlocks = SLICES_PER_SSD / SLICES_PER_BLOCK;
-	static unsigned char seenBlock[USER_BLOCKS_PER_SSD] = {0};
-	memset(seenBlock, 0, sizeof(seenBlock));
+	if(idx == HASH_NULL)
+	{
+		//DEBUG
+		xil_printf("HASH IS FULL! key=0x%08X\r\n", key);
 
-	for (unsigned int i = 0; i < SLICES_PER_SSD; i++) {
-		unsigned int vsa = logicalSliceMapPtr->logicalSlice[i].virtualSliceAddr;
-		if (vsa != VSA_NONE) {
-			unsigned int die = Vsa2VdieTranslation(vsa);
-			unsigned int blk = Vsa2VblockTranslation(vsa);
-			unsigned int globalBlkIdx = die * USER_BLOCKS_PER_DIE + blk;
-
-			if (!seenBlock[globalBlkIdx]) {
-				seenBlock[globalBlkIdx] = 1;
-				mappedBlockCnt++;
-			}
-		}
+		nvmeCPL.statusField.SC = SC_INTERNAL_DEVICE_ERROR;
+		nvmeCPL.statusField.SCT = SCT_GENERIC_COMMAND_STATUS;
+		set_auto_nvme_cpl(cmdSlotTag, nvmeCPL.specific, nvmeCPL.statusFieldWord);
+		return;
 	}
 
-	unsigned int freeBlkCnt = 0;
-	unsigned int invalidSum = 0;
-	unsigned int blockCnt = 0;
+	ASSERT((lba + 1) <= (storageCapacity_L / USER_CHANNELS));
 
-	for (unsigned int d = 0; d < USER_DIES; d++) {
-		freeBlkCnt += virtualDieMapPtr->die[d].freeBlockCnt;
-		for (unsigned int b = 0; b < USER_BLOCKS_PER_DIE; b++) {
-			invalidSum += virtualBlockMapPtr->block[d][b].invalidSliceCnt;
-			blockCnt++;
-		}
-	}
+	nvmeIOCmd->dword[10] = lba;
+	nvmeIOCmd->dword[11] = 0;
+	nvmeIOCmd->dword[12] = 0;
 
-	xil_printf("-----------------------------------------------------\r\n");
-	xil_printf("[FTL] Mapping Table Summary\r\n");
-	xil_printf("-----------------------------------------------------\r\n");
-	xil_printf(" Valid logicalSliceMap entries : %u / %u\r\n", validLogicalCnt, SLICES_PER_SSD);
-	xil_printf(" Valid virtualSliceMap entries : %u / %u\r\n", validVirtualCnt, SLICES_PER_SSD);
-	xil_printf(" Unique mapped blocks          : %u / %u\r\n", mappedBlockCnt, totalLogicalBlocks);
-	xil_printf("-----------------------------------------------------\r\n");
-	xil_printf("[FTL] Space Utilization\r\n");
-	xil_printf("-----------------------------------------------------\r\n");
-	xil_printf(" Free blocks remaining         : %u\r\n", freeBlkCnt);
-	xil_printf("-----------------------------------------------------\r\n");
+	//DEBUG
+	xil_printf("KV_PUT key=0x%08X idx=%u lba=%u\r\n", key, idx, lba);
+
+	handle_nvme_io_write(cmdSlotTag, nvmeIOCmd);
+	return ;
 }
-/* ================================= */
 
+void handle_nvme_kv_get(unsigned int cmdSlotTag, NVME_IO_COMMAND *nvmeIOCmd)
+{	
+	NVME_COMPLETION nvmeCPL;
+	uint32_t key, lba, idx;
+
+	nvmeCPL.dword[0] = 0;
+	nvmeCPL.specific = 0x0;
+
+	key = nvmeIOCmd->dword[10];
+
+	idx = hash_find(&kvHash, key);
+	if(idx == HASH_NULL)
+	{
+		//DEBUG
+		xil_printf("KV_GET miss: key=0x%08X\r\n", key);
+		nvmeCPL.statusField.SC = NVME_STATUS_NO_SUCH_KEY;
+		nvmeCPL.statusField.SCT = SCT_VENDOR_SPECIFIC;
+		set_auto_nvme_cpl(cmdSlotTag, nvmeCPL.specific, nvmeCPL.statusFieldWord);
+		return;
+	}
+
+	lba = kvHash.nodes[idx].lba;
+	ASSERT((lba + 1) <= (storageCapacity_L / USER_CHANNELS));
+
+	nvmeIOCmd->dword[10] = lba;
+	nvmeIOCmd->dword[11] = 0;
+	nvmeIOCmd->dword[12] = 0;
+	xil_printf("KV_GET key=0x%08X idx=%u lba=%u\r\n", key, idx, lba);
+
+	ReqTransNvmeToSlice(cmdSlotTag, lba, 0, IO_NVM_KV_GET);
+	return ;
+}
 void handle_nvme_io_cmd(NVME_COMMAND *nvmeCmd)
 {
 	NVME_IO_COMMAND *nvmeIOCmd;
 	NVME_COMPLETION nvmeCPL;
 	unsigned int opc;
 	nvmeIOCmd = (NVME_IO_COMMAND*)nvmeCmd->cmdDword;
-	/*		xil_printf("OPC = 0x%X\r\n", nvmeIOCmd->OPC);
-			xil_printf("PRP1[63:32] = 0x%X, PRP1[31:0] = 0x%X\r\n", nvmeIOCmd->PRP1[1], nvmeIOCmd->PRP1[0]);
-			xil_printf("PRP2[63:32] = 0x%X, PRP2[31:0] = 0x%X\r\n", nvmeIOCmd->PRP2[1], nvmeIOCmd->PRP2[0]);
-			xil_printf("dword10 = 0x%X\r\n", nvmeIOCmd->dword10);
-			xil_printf("dword11 = 0x%X\r\n", nvmeIOCmd->dword11);
-			xil_printf("dword12 = 0x%X\r\n", nvmeIOCmd->dword12);*/
-
 
 	opc = (unsigned int)nvmeIOCmd->OPC;
 
@@ -204,26 +222,24 @@ void handle_nvme_io_cmd(NVME_COMMAND *nvmeCmd)
 		}
 		case IO_NVM_WRITE:
 		{
-//			xil_printf("IO Write Command\r\n");
 			handle_nvme_io_write(nvmeCmd->cmdSlotTag, nvmeIOCmd);
 			break;
 		}
 		case IO_NVM_READ:
 		{
-//			xil_printf("IO Read Command\r\n");
 			handle_nvme_io_read(nvmeCmd->cmdSlotTag, nvmeIOCmd);
 			break;
 		}
-		/* === Block-Level FTL (ESS4116) === */
-		case IO_NVM_FTL_MAP:
+		case IO_NVM_KV_PUT:
 		{
-			handle_nvme_io_mapping_info();
-			nvmeCPL.dword[0] = 0;
-			nvmeCPL.specific = 0x0;
-			set_auto_nvme_cpl(nvmeCmd->cmdSlotTag, nvmeCPL.specific, nvmeCPL.statusFieldWord);
+			handle_nvme_kv_put(nvmeCmd->cmdSlotTag, nvmeIOCmd);
 			break;
 		}
-		/* ================================= */
+		case IO_NVM_KV_GET:
+		{
+			handle_nvme_kv_get(nvmeCmd->cmdSlotTag, nvmeIOCmd);
+			break;
+		}
 		default:
 		{
 			xil_printf("Not Support IO Command OPC: %X\r\n", opc);
@@ -232,4 +248,3 @@ void handle_nvme_io_cmd(NVME_COMMAND *nvmeCmd)
 		}
 	}
 }
-

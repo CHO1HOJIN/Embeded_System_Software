@@ -78,6 +78,7 @@ void nvme_main()
 	xil_printf("!!! Wait until FTL reset complete !!! \r\n");
 
 	InitFTL();
+	InitHash();
 
 	xil_printf("\r\nFTL reset complete!!! \r\n\r\n");
 	xil_printf("A. Re-boot the PC if a bitstream is loaded for the first time \r\n");

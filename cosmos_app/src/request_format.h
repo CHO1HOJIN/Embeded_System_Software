@@ -69,6 +69,9 @@
 #define REQ_CODE_FLUSH				0x0F
 #define REQ_CODE_RxDMA				0x10
 #define REQ_CODE_TxDMA				0x20
+#define REQ_CODE_TxDMA_FOR_KV_GET	0x21
+
+#define REQ_CODE_KV_GET 			0x30
 
 #define REQ_CODE_OCSSD_PHY_TYPE_BASE	0xA0
 #define REQ_CODE_OCSSD_PHY_WRITE		0xA0
@@ -168,6 +171,9 @@ typedef struct _SSD_REQ_FORMAT
 	unsigned int nextReq : 16;
 	unsigned int prevBlockingReq : 16;
 	unsigned int nextBlockingReq : 16;
+
+	unsigned int prpH : 32;
+	unsigned int prpL : 32;
 
 } SSD_REQ_FORMAT, *P_SSD_REQ_FORMAT;
 

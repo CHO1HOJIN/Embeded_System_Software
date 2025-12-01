@@ -108,4 +108,11 @@
 
 #define DRAM_END_ADDR						0x3FFFFFFF
 
+// KV SSD hash table configuration
+#define HASH_COUNT 1000000u
+#define KV_BUCKET_BYTES    (HASH_COUNT * sizeof(uint32_t))
+#define KV_NODE_BYTES      (HASH_COUNT * sizeof(hash_node_t))
+#define BUCKET_BASE     RESERVED1_START_ADDR
+#define NODE_BASE       (BUCKET_BASE + KV_BUCKET_BYTES)
+
 #endif /* MEMORY_MAP_H_ */
